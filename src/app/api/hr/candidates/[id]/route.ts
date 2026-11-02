@@ -30,3 +30,4 @@ export async function GET(
     return error("FAILED", err.message, 500);
   }
 }
+

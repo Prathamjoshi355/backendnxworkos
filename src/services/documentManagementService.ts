@@ -622,7 +622,7 @@ export async function createDocument(
   }
 
   // Role & scope authorization check (Section 12)
-  const allowedRoles = ["SUPER_ADMIN", "ADMIN", "DIVISION_ADMIN", "MANAGER", "TEAM_LEADER", "HR_HEAD"];
+  const allowedRoles = ["SUPER_ADMIN", "ADMIN", "DIVISION_ADMIN", "MANAGER", "TEAM_LEADER", "HR_HEAD", "HR"];
   const userPermissions = Array.isArray(currentUser.permissions) ? currentUser.permissions : [];
   const hasDocPermission = userPermissions.includes("documents:create") || userPermissions.includes("documents:manage");
 

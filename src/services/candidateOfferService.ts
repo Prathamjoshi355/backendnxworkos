@@ -42,6 +42,7 @@ export async function createCandidate(
     designation: string;
     departmentId?: string;
     divisionId?: string;
+    offerType?: OfferType;
     notes?: string;
   }
 ): Promise<ICandidate> {
@@ -61,6 +62,7 @@ export async function createCandidate(
     email,
     phone: payload.phone?.trim() || null,
     designation: payload.designation.trim(),
+    offerType: payload.offerType || null,
     status: "CANDIDATE",
     notes: payload.notes?.trim() || null,
     createdBy: currentUser._id,
@@ -359,8 +361,11 @@ export async function onboardApprovedCandidate(
     acceptanceLetterFile?: {
       buffer: Buffer;
       fileName: string;
-      mimeType: string;
+      mimeType?: string;
     };
+    acceptanceLetterBase64?: string;
+    acceptanceLetterFileName?: string;
+    requireAcceptanceLetter?: boolean;
   } = {}
 ): Promise<{ candidate: ICandidate; user: any }> {
   const candidate = Types.ObjectId.isValid(candidateIdOrObjId)
@@ -379,17 +384,62 @@ export async function onboardApprovedCandidate(
   const employmentType = isIntern ? "INTERN" : "EMPLOYEE";
   const role = isIntern ? "INTERN" : "EMPLOYEE";
 
-  // Create active User record via existing user service (uses standard password and mandatory change)
-  const newUser = await createUser({
-    fullName: candidate.fullName,
-    email: candidate.email,
-    role,
-    employmentType,
-    designation: candidate.designation,
-    organizationId: String(candidate.organizationId),
-    divisionId: options.divisionId || (candidate.divisionId ? String(candidate.divisionId) : undefined),
-    departmentId: options.departmentId || candidate.departmentId || undefined,
-  });
+  // Resolve Acceptance Letter
+  let acceptanceLetter = options.acceptanceLetterFile;
+  if (!acceptanceLetter && options.acceptanceLetterBase64) {
+    acceptanceLetter = {
+      buffer: Buffer.from(options.acceptanceLetterBase64, "base64"),
+      fileName: options.acceptanceLetterFileName || "acceptance_letter.pdf",
+      mimeType: "application/pdf",
+    };
+  }
+
+  // Validate mandatory Acceptance Letter if required
+  const mustRequireLetter = options.requireAcceptanceLetter !== false;
+  if (mustRequireLetter && !acceptanceLetter) {
+    throw new Error("MANDATORY_ACCEPTANCE_LETTER_REQUIRED: Valid PDF Acceptance Letter is mandatory for employee onboarding.");
+  }
+
+  if (acceptanceLetter) {
+    if (!acceptanceLetter.buffer || acceptanceLetter.buffer.length < 4 || acceptanceLetter.buffer.slice(0, 4).toString("ascii") !== "%PDF") {
+      throw new Error("INVALID_PDF_FILE: Acceptance letter must be a valid PDF document with %PDF header signature.");
+    }
+  }
+
+  // Staged / Atomic User creation with rollback on upload failure
+  let newUser: any = null;
+  try {
+    // Create active User record via existing user service (uses standard password and mandatory change)
+    newUser = await createUser({
+      fullName: candidate.fullName,
+      email: candidate.email,
+      role,
+      employmentType,
+      designation: candidate.designation,
+      organizationId: String(candidate.organizationId),
+      divisionId: options.divisionId || (candidate.divisionId ? String(candidate.divisionId) : undefined),
+      departmentId: options.departmentId || candidate.departmentId || undefined,
+    });
+
+    // If acceptance letter provided, attach to EmployeeDocument
+    if (acceptanceLetter) {
+      const { uploadOnboardingAcceptanceLetter } = await import("./employeeService");
+      await uploadOnboardingAcceptanceLetter(
+        currentUser,
+        String(newUser._id),
+        acceptanceLetter
+      );
+    }
+  } catch (err: any) {
+    if (newUser && newUser._id) {
+      try {
+        await User.findByIdAndDelete(newUser._id);
+      } catch (delErr: any) {
+        logger.error("Failed to rollback created user during aborted onboarding", { userId: newUser._id, error: delErr.message });
+      }
+    }
+    throw err;
+  }
 
   // Link historical Offer Document ID to employee record permanently without changing Offer ID
   candidate.convertedUserId = newUser._id;
@@ -407,20 +457,6 @@ export async function onboardApprovedCandidate(
   });
 
   await candidate.save();
-
-  // If acceptance letter provided, attach to EmployeeDocument
-  if (options.acceptanceLetterFile) {
-    try {
-      const { uploadOnboardingAcceptanceLetter } = await import("./employeeService");
-      await uploadOnboardingAcceptanceLetter(
-        currentUser,
-        String(newUser._id),
-        options.acceptanceLetterFile
-      );
-    } catch (err: any) {
-      logger.error("Failed to link onboarding acceptance letter", { error: err.message });
-    }
-  }
 
   return { candidate, user: newUser };
 }

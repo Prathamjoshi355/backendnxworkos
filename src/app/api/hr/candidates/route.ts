@@ -82,3 +82,4 @@ export async function POST(request: Request) {
     return error("FAILED", err.message || "Failed to create candidate", 500);
   }
 }
+

@@ -114,7 +114,7 @@ const CandidateSchema = new Schema<ICandidate>(
       index: true,
     },
 
-    offerType: { type: String, enum: ["EMPLOYEE_OFFER", "INTERNSHIP_OFFER"], default: null },
+    offerType: { type: String, enum: ["EMPLOYEE_OFFER", "INTERNSHIP_OFFER", null], default: null },
     offerDocumentId: { type: String, default: null, index: true },
     offerDocumentRef: { type: Schema.Types.ObjectId, ref: "NXDocument", default: null },
 

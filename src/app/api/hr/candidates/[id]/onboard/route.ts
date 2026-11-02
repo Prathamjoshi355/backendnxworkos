@@ -29,6 +29,9 @@ export async function POST(
     if (err.message.startsWith("CANDIDATE_NOT_APPROVED")) {
       return error("PRECONDITION_FAILED", err.message, 412);
     }
+    if (err.message.startsWith("MANDATORY_ACCEPTANCE_LETTER_REQUIRED") || err.message.startsWith("INVALID_PDF_FILE")) {
+      return error("VALIDATION_ERROR", err.message, 422);
+    }
     return error("FAILED", err.message, 500);
   }
 }
