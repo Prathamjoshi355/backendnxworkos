@@ -1,0 +1,51 @@
+{
+  "backupId": "backup_2026-11-02T08-11-11-830Z",
+  "createdAt": "2026-11-02T08:11:11.892Z",
+  "mongodbUri": "[REDACTED]",
+  "collections": [
+    {
+      "name": "users",
+      "count": 5,
+      "sizeBytes": 7365
+    },
+    {
+      "name": "notifications",
+      "count": 3,
+      "sizeBytes": 1623
+    },
+    {
+      "name": "departments",
+      "count": 1,
+      "sizeBytes": 328
+    },
+    {
+      "name": "conversations",
+      "count": 2,
+      "sizeBytes": 1359
+    },
+    {
+      "name": "organizations",
+      "count": 2,
+      "sizeBytes": 829
+    },
+    {
+      "name": "teams",
+      "count": 1,
+      "sizeBytes": 357
+    },
+    {
+      "name": "messages",
+      "count": 1,
+      "sizeBytes": 834
+    },
+    {
+      "name": "divisions",
+      "count": 1,
+      "sizeBytes": 287
+    }
+  ],
+  "totalCollections": 8,
+  "totalDocuments": 16,
+  "totalSizeBytes": 12982,
+  "sha256Checksum": "457a3990f95acf2c3c9d374e47d30502e982169db7826430ef511ec0a9e40022"
+}
