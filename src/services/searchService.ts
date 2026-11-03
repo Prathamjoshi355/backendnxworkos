@@ -71,9 +71,6 @@ export interface SearchOptions {
 }
 
 export const ALLOWED_SEARCH_ROLES = [
-  "EMPLOYEE",
-  "INTERN",
-  "SALES_EXECUTIVE",
   "MANAGER",
   "TEAM_LEADER",
   "HR",
@@ -151,7 +148,8 @@ export async function globalSearch(
   options: SearchOptions = {}
 ): Promise<GlobalSearchResult> {
   const role = user.role || "EMPLOYEE";
-  if (!isSearchAllowedForRole(role)) {
+  const isScopedTaskSearch = options.type?.toUpperCase() === "TASK";
+  if (!isSearchAllowedForRole(role) && !isScopedTaskSearch) {
     throw new Error("FORBIDDEN");
   }
 

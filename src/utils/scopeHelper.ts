@@ -255,7 +255,7 @@ export async function canViewAttendance(requestUser: any, targetUserId: string):
  */
 export async function canCorrectAttendance(requestUser: any, targetUserId: string): Promise<boolean> {
   if (requestUser.role === "SUPER_ADMIN") return true;
-  if (requestUser.role !== "ADMIN") return false;
+  if (requestUser.role !== "ADMIN" && requestUser.role !== "HR") return false;
 
   const targetUser = await User.findById(targetUserId).select("organizationId").lean();
   if (!targetUser) return false;

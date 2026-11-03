@@ -37,7 +37,7 @@ export function formatDateScope(d = new Date()): string {
   return `${year}-${month}-${day}`;
 }
 
-const DEFAULT_WORKING_DAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"];
+const DEFAULT_WORKING_DAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"];
 const DEFAULT_WORK_END_TIME = "18:30";
 const DEFAULT_GRACE_PERIOD_MINUTES = 10;
 const LEASE_DURATION_MS = 10 * 60 * 1000; // 10 minutes

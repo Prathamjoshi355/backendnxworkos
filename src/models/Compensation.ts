@@ -2,8 +2,27 @@ import mongoose, { Schema } from "mongoose";
 
 export type CompensationEmploymentType = "EMPLOYEE" | "INTERN";
 export type CompensationType = "SALARY" | "STIPEND";
-export type CompensationPayFrequency = "MONTHLY" | "YEARLY";
+export type CompensationPayFrequency = "MONTHLY" | "YEARLY" | "BIWEEKLY";
 export type CompensationStatus = "ACTIVE" | "INACTIVE" | "REVISED";
+export type SalaryType = "MONTHLY" | "HOURLY";
+
+export interface ICompensationAllowances {
+  hra?: number;
+  conveyance?: number;
+  special?: number;
+  medical?: number;
+  other?: number;
+  [key: string]: any;
+}
+
+export interface ICompensationDeductions {
+  pf?: number;
+  esi?: number;
+  tds?: number;
+  professionalTax?: number;
+  other?: number;
+  [key: string]: any;
+}
 
 export interface ICompensation extends mongoose.Document {
   userId: mongoose.Types.ObjectId | string;
@@ -11,9 +30,31 @@ export interface ICompensation extends mongoose.Document {
   divisionId?: mongoose.Types.ObjectId | string | null;
   employmentType: CompensationEmploymentType;
   compensationType: CompensationType;
-  baseAmount: number;
+  baseAmount: number; // monthly gross or monthly stipend
   currency: string;
   payFrequency: CompensationPayFrequency;
+  salaryType?: SalaryType;
+  monthlyGrossSalary?: number;
+  hourlyRate?: number;
+  basicSalary?: number;
+  allowances?: ICompensationAllowances;
+  deductions?: ICompensationDeductions;
+  ctc?: number;
+  grossSalary?: number;
+  netSalary?: number;
+  payrollStartDate?: Date | null;
+
+  // Intern specific fields
+  stipendType?: SalaryType;
+  monthlyStipend?: number;
+  hourlyStipend?: number;
+  internshipStartDate?: Date | null;
+  internshipEndDate?: Date | null;
+  evaluationPeriodMonths?: number | null;
+  provisionPeriodStipend?: number | null;
+  confirmedStipend?: number | null;
+  confirmedStipendEffectiveDate?: Date | null;
+
   effectiveFrom: Date;
   effectiveTo?: Date | null;
   status: CompensationStatus;
@@ -32,7 +73,28 @@ const CompensationSchema = new Schema<ICompensation>(
     compensationType: { type: String, enum: ["SALARY", "STIPEND"], required: true, index: true },
     baseAmount: { type: Number, required: true, min: 0 },
     currency: { type: String, default: "INR" },
-    payFrequency: { type: String, enum: ["MONTHLY", "YEARLY"], default: "MONTHLY" },
+    payFrequency: { type: String, enum: ["MONTHLY", "YEARLY", "BIWEEKLY"], default: "MONTHLY" },
+    salaryType: { type: String, enum: ["MONTHLY", "HOURLY"], default: "MONTHLY" },
+    monthlyGrossSalary: { type: Number, default: 0 },
+    hourlyRate: { type: Number, default: 0 },
+    basicSalary: { type: Number, default: 0 },
+    allowances: { type: Schema.Types.Mixed, default: {} },
+    deductions: { type: Schema.Types.Mixed, default: {} },
+    ctc: { type: Number, default: 0 },
+    grossSalary: { type: Number, default: 0 },
+    netSalary: { type: Number, default: 0 },
+    payrollStartDate: { type: Date, default: null },
+
+    stipendType: { type: String, enum: ["MONTHLY", "HOURLY"], default: "MONTHLY" },
+    monthlyStipend: { type: Number, default: 0 },
+    hourlyStipend: { type: Number, default: 0 },
+    internshipStartDate: { type: Date, default: null },
+    internshipEndDate: { type: Date, default: null },
+    evaluationPeriodMonths: { type: Number, default: null },
+    provisionPeriodStipend: { type: Number, default: null },
+    confirmedStipend: { type: Number, default: null },
+    confirmedStipendEffectiveDate: { type: Date, default: null },
+
     effectiveFrom: { type: Date, required: true, index: true },
     effectiveTo: { type: Date, default: null },
     status: { type: String, enum: ["ACTIVE", "INACTIVE", "REVISED"], default: "ACTIVE", index: true },

@@ -20,6 +20,10 @@ export async function GET(request: Request) {
     const confidentialityLevel = url.searchParams.get("confidentialityLevel") || undefined;
     const clientCompanyId = url.searchParams.get("clientCompanyId") || undefined;
     const employeeId = url.searchParams.get("employeeId") || undefined;
+    const internId = url.searchParams.get("internId") || undefined;
+    const candidateId = url.searchParams.get("candidateId") || undefined;
+    const assignedPersonType = url.searchParams.get("assignedPersonType") || undefined;
+    const assignedPersonId = url.searchParams.get("assignedPersonId") || undefined;
     const projectId = url.searchParams.get("projectId") || undefined;
     const divisionId = url.searchParams.get("divisionId") || undefined;
     const departmentId = url.searchParams.get("departmentId") || undefined;
@@ -46,6 +50,10 @@ export async function GET(request: Request) {
       confidentialityLevel,
       clientCompanyId,
       employeeId,
+      internId,
+      candidateId,
+      assignedPersonType,
+      assignedPersonId,
       projectId,
       divisionId,
       departmentId,

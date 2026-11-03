@@ -9,12 +9,88 @@ import ClientCompany, { IClientCompany } from "../models/ClientCompany";
 import NXDocument, { INXDocument, DocumentStatus, ConfidentialityLevel, AttachmentType } from "../models/NXDocument";
 import Organization from "../models/Organization";
 import User from "../models/User";
+import Candidate from "../models/Candidate";
 import AuditLog from "../models/AuditLog";
 import storageProvider from "./storageService";
 import { validateUploadFile } from "../utils/fileSecurity";
 import { logger } from "../utils/logger";
 import * as docIdService from "./documentIdService";
 export * from "./documentIdService";
+
+export type PersonType = "EMPLOYEE" | "INTERN" | "CANDIDATE";
+
+/**
+ * Validates document type compatibility with person classifications (Section 4).
+ * Enforces:
+ * - Employee Offer / Internship Offer / Offer Letter -> CANDIDATE
+ * - Promotion / Increment / Appointment / Confirmation -> EMPLOYEE
+ * - Internship Extension / Internship Letter -> INTERN
+ * - Experience / Relieving / Termination / Salary Slip / Warning / Leave -> EMPLOYEE or INTERN
+ * - General HR / NDA -> EMPLOYEE, INTERN, or CANDIDATE
+ */
+export function getCompatiblePersonTypes(documentTypeNorm: string): PersonType[] {
+  const norm = (documentTypeNorm || "").toLowerCase().trim();
+
+  // Candidate-specific offer letters
+  if (
+    norm.includes("731") ||
+    norm.includes("employee offer") ||
+    norm.includes("493") ||
+    norm.includes("internship offer") ||
+    norm.includes("512") ||
+    norm === "offer letter"
+  ) {
+    return ["CANDIDATE"];
+  }
+
+  // Intern-specific letters
+  if (
+    norm.includes("627") ||
+    norm.includes("internship extension") ||
+    norm.includes("749") ||
+    norm.includes("internship letter")
+  ) {
+    return ["INTERN"];
+  }
+
+  // Employee-specific letters
+  if (
+    norm.includes("817") ||
+    norm.includes("promotion") ||
+    norm.includes("263") ||
+    norm.includes("increment") ||
+    norm.includes("salary revision") ||
+    norm.includes("331") ||
+    norm.includes("appointment") ||
+    norm.includes("835") ||
+    norm.includes("confirmation") ||
+    norm.includes("692") ||
+    norm.includes("employment verification")
+  ) {
+    return ["EMPLOYEE"];
+  }
+
+  // Shared letters: Experience, Relieving, Termination, Salary Slip, Warning, Leave
+  if (
+    norm.includes("286") ||
+    norm.includes("experience") ||
+    norm.includes("913") ||
+    norm.includes("relieving") ||
+    norm.includes("458") ||
+    norm.includes("termination") ||
+    norm.includes("371") ||
+    norm.includes("salary slip") ||
+    norm.includes("914") ||
+    norm.includes("warning") ||
+    norm.includes("946") ||
+    norm.includes("leave approval")
+  ) {
+    return ["EMPLOYEE", "INTERN"];
+  }
+
+  // Default fallback for general HR documents
+  return ["EMPLOYEE", "INTERN", "CANDIDATE"];
+}
 
 // ---------------------------------------------------------------------------
 // 1. Initial Predefined Categories and Document Types
@@ -575,6 +651,11 @@ export interface CreateDocumentInput {
   clientCompanyId?: string;
   employeeId?: string;
   internId?: string;
+  candidateId?: string;
+  assignedPersonType?: PersonType;
+  assignedPersonId?: string;
+  assignedPersonName?: string;
+  assignedPersonEmail?: string;
   vendorId?: string;
   projectId?: string;
   recipientType?: string;
@@ -754,6 +835,146 @@ export async function createDocument(
 
   const initialStatus = input.status || "DRAFT";
 
+  // -------------------------------------------------------------
+  // HR & Employment Document Assignment & Person Compatibility Validation
+  // -------------------------------------------------------------
+  let assignedPersonType: PersonType | null = input.assignedPersonType || null;
+  let assignedEmployeeId: Types.ObjectId | null = null;
+  let assignedInternId: Types.ObjectId | null = null;
+  let assignedCandidateId: Types.ObjectId | null = null;
+  let assignedPersonIdStr: string | null = input.assignedPersonId || null;
+  let assignedPersonNameStr: string | null = input.assignedPersonName || null;
+  let assignedPersonEmailStr: string | null = input.assignedPersonEmail || null;
+
+  // Infer person type if not explicitly set but employeeId/internId/candidateId provided
+  if (!assignedPersonType) {
+    if (input.candidateId) assignedPersonType = "CANDIDATE";
+    else if (input.internId) assignedPersonType = "INTERN";
+    else if (input.employeeId) assignedPersonType = "EMPLOYEE";
+  }
+
+  if (assignedPersonType) {
+    const isHrDoc =
+      docType.categoryCode === "HR_EMP" ||
+      category.code === "HR_EMP" ||
+      docType.name.toLowerCase().includes("letter") ||
+      docType.name.toLowerCase().includes("slip") ||
+      docType.name.toLowerCase().includes("nda") ||
+      docType.name.toLowerCase().includes("offer");
+
+    if (isHrDoc) {
+      const compatibleTypes = getCompatiblePersonTypes(docType.name || docType.code);
+      if (!compatibleTypes.includes(assignedPersonType)) {
+        throw new Error(
+          `INCOMPATIBLE_PERSON_TYPE: Document type '${docType.name}' is only compatible with: ${compatibleTypes.join(", ")}. Provided: '${assignedPersonType}'`
+        );
+      }
+    }
+
+    if (assignedPersonType === "EMPLOYEE") {
+      const targetId = input.employeeId || input.assignedPersonId;
+      if (!targetId) {
+        throw new Error("MISSING_PERSON_REFERENCE: employeeId or assignedPersonId is required for EMPLOYEE assignment.");
+      }
+      const isObjectId = mongoose.isValidObjectId(targetId);
+      const user = await User.findOne({
+        organizationId: currentUser.organizationId,
+        $or: [
+          ...(isObjectId ? [{ _id: targetId }] : []),
+          { employeeId: targetId },
+          { email: String(targetId).toLowerCase() },
+        ],
+      });
+
+      if (!user) {
+        throw new Error(`PERSON_NOT_FOUND: No employee record found matching '${targetId}' in organization.`);
+      }
+
+      if (user.employmentType === "INTERN" && !user.employmentClassification?.includes("EMPLOYEE")) {
+        throw new Error("INVALID_PERSON_TYPE: Selected user is an intern, not an employee. Use INTERN person type.");
+      }
+
+      if (currentUser.role === "DIVISION_ADMIN" && currentUser.divisionId) {
+        if (user.divisionId && String(user.divisionId) !== String(currentUser.divisionId)) {
+          throw new Error("FORBIDDEN: Cannot assign documents to staff outside your assigned division.");
+        }
+      }
+
+      assignedEmployeeId = user._id as Types.ObjectId;
+      assignedPersonIdStr = user.employeeId || String(user._id);
+      assignedPersonNameStr = user.fullName;
+      assignedPersonEmailStr = user.email;
+    } else if (assignedPersonType === "INTERN") {
+      const targetId = input.internId || input.employeeId || input.assignedPersonId;
+      if (!targetId) {
+        throw new Error("MISSING_PERSON_REFERENCE: internId or assignedPersonId is required for INTERN assignment.");
+      }
+      const isObjectId = mongoose.isValidObjectId(targetId);
+      const user = await User.findOne({
+        organizationId: currentUser.organizationId,
+        $or: [
+          ...(isObjectId ? [{ _id: targetId }] : []),
+          { employeeId: targetId },
+          { email: String(targetId).toLowerCase() },
+        ],
+      });
+
+      if (!user) {
+        throw new Error(`PERSON_NOT_FOUND: No intern record found matching '${targetId}' in organization.`);
+      }
+
+      const isUserIntern =
+        user.employmentType === "INTERN" ||
+        user.role === "INTERN" ||
+        user.employmentClassification === "FULL_TIME_INTERN" ||
+        user.employmentClassification === "PART_TIME_INTERN";
+
+      if (!isUserIntern) {
+        throw new Error("INVALID_PERSON_TYPE: Selected user is a regular employee, not an intern. Use EMPLOYEE person type.");
+      }
+
+      if (currentUser.role === "DIVISION_ADMIN" && currentUser.divisionId) {
+        if (user.divisionId && String(user.divisionId) !== String(currentUser.divisionId)) {
+          throw new Error("FORBIDDEN: Cannot assign documents to staff outside your assigned division.");
+        }
+      }
+
+      assignedInternId = user._id as Types.ObjectId;
+      assignedPersonIdStr = user.employeeId || String(user._id);
+      assignedPersonNameStr = user.fullName;
+      assignedPersonEmailStr = user.email;
+    } else if (assignedPersonType === "CANDIDATE") {
+      const targetId = input.candidateId || input.assignedPersonId;
+      if (!targetId) {
+        throw new Error("MISSING_PERSON_REFERENCE: candidateId or assignedPersonId is required for CANDIDATE assignment.");
+      }
+      const isObjectId = mongoose.isValidObjectId(targetId);
+      const candidate = await Candidate.findOne({
+        organizationId: currentUser.organizationId,
+        $or: [
+          ...(isObjectId ? [{ _id: targetId }] : []),
+          { candidateId: targetId },
+          { email: String(targetId).toLowerCase() },
+        ],
+      });
+
+      if (!candidate) {
+        throw new Error(`PERSON_NOT_FOUND: No candidate record found matching '${targetId}' in organization.`);
+      }
+
+      if (currentUser.role === "DIVISION_ADMIN" && currentUser.divisionId) {
+        if (candidate.divisionId && String(candidate.divisionId) !== String(currentUser.divisionId)) {
+          throw new Error("FORBIDDEN: Cannot assign documents to candidates outside your assigned division.");
+        }
+      }
+
+      assignedCandidateId = candidate._id as Types.ObjectId;
+      assignedPersonIdStr = candidate.candidateId;
+      assignedPersonNameStr = candidate.fullName;
+      assignedPersonEmailStr = candidate.email;
+    }
+  }
+
   // 5. Create Document record
   const doc = await NXDocument.create({
     documentId,
@@ -784,8 +1005,13 @@ export async function createDocument(
     clientCompanyId: input.clientCompanyId ? new Types.ObjectId(input.clientCompanyId) : null,
     externalCompanyName: input.externalCompanyName || null,
     externalCompanyId: input.externalCompanyId || null,
-    employeeId: input.employeeId ? new Types.ObjectId(input.employeeId) : null,
-    internId: input.internId ? new Types.ObjectId(input.internId) : null,
+    employeeId: assignedEmployeeId,
+    internId: assignedInternId,
+    candidateId: assignedCandidateId,
+    assignedPersonType,
+    assignedPersonId: assignedPersonIdStr,
+    assignedPersonName: assignedPersonNameStr,
+    assignedPersonEmail: assignedPersonEmailStr,
     vendorId: input.vendorId || null,
     projectId: input.projectId ? new Types.ObjectId(input.projectId) : null,
 
@@ -840,6 +1066,17 @@ export async function createDocument(
     logger.error("Failed to create audit log for document creation", { error: err.message });
   }
 
+  if (assignedCandidateId && (docType.code === "731" || docType.code === "493" || docType.code === "512" || docType.name.toLowerCase().includes("offer"))) {
+    try {
+      await Candidate.findByIdAndUpdate(assignedCandidateId, {
+        offerDocumentId: documentId,
+        offerDocumentRef: doc._id,
+      });
+    } catch (e: any) {
+      logger.warn("Could not link candidate offer document ref", { error: e.message });
+    }
+  }
+
   return doc;
 }
 
@@ -856,6 +1093,10 @@ export async function listDocuments(
     confidentialityLevel?: string;
     clientCompanyId?: string;
     employeeId?: string;
+    internId?: string;
+    candidateId?: string;
+    assignedPersonType?: string;
+    assignedPersonId?: string;
     projectId?: string;
     divisionId?: string;
     departmentId?: string;
@@ -892,6 +1133,7 @@ export async function listDocuments(
       { employeeId: currentUser._id },
       { internId: currentUser._id },
       { assignedEmployeeId: currentUser._id },
+      { assignedPersonId: currentUser.employeeId },
       { createdBy: currentUser._id },
       { confidentialityLevel: "PUBLIC" },
     ];
@@ -905,6 +1147,10 @@ export async function listDocuments(
   if (query.confidentialityLevel) filter.confidentialityLevel = query.confidentialityLevel;
   if (query.clientCompanyId) filter.clientCompanyId = new Types.ObjectId(query.clientCompanyId);
   if (query.employeeId) filter.employeeId = new Types.ObjectId(query.employeeId);
+  if (query.internId) filter.internId = new Types.ObjectId(query.internId);
+  if (query.candidateId) filter.candidateId = new Types.ObjectId(query.candidateId);
+  if (query.assignedPersonType) filter.assignedPersonType = query.assignedPersonType;
+  if (query.assignedPersonId) filter.assignedPersonId = query.assignedPersonId;
   if (query.projectId) filter.projectId = new Types.ObjectId(query.projectId);
   if (query.divisionId) filter.divisionId = new Types.ObjectId(query.divisionId);
   if (query.departmentId) filter.departmentId = query.departmentId;
@@ -931,6 +1177,8 @@ export async function listDocuments(
       { documentId: { $regex: s, $options: "i" } },
       { title: { $regex: s, $options: "i" } },
       { shortDescription: { $regex: s, $options: "i" } },
+      { assignedPersonId: { $regex: s, $options: "i" } },
+      { assignedPersonName: { $regex: s, $options: "i" } },
       { tags: { $in: [new RegExp(s, "i")] } },
     ];
   }
@@ -947,7 +1195,9 @@ export async function listDocuments(
       .populate("categoryId", "name code")
       .populate("documentTypeId", "name code hasFinancials")
       .populate("clientCompanyId", "companyName contactPerson officialEmail")
-      .populate("employeeId", "fullName email role designation")
+      .populate("employeeId", "fullName email role designation employeeId")
+      .populate("internId", "fullName email role designation employeeId")
+      .populate("candidateId", "fullName email designation candidateId status")
       .populate("createdBy", "fullName email role"),
     NXDocument.countDocuments(filter),
   ]);
@@ -1051,6 +1301,18 @@ export async function updateDocumentMetadata(
   }
   if (updates.organizationId && String(updates.organizationId) !== String(doc.organizationId)) {
     throw new Error("FORBIDDEN: Cannot reassign document across organizations.");
+  }
+
+  // Prohibit unauthorized reassignment of an already assigned person (Section 5)
+  if (
+    (doc.employeeId || doc.internId || doc.candidateId || doc.assignedPersonId) &&
+    (updates.employeeId || updates.internId || updates.candidateId || updates.assignedPersonId)
+  ) {
+    const existingRef = String(doc.employeeId || doc.internId || doc.candidateId || doc.assignedPersonId || "");
+    const newRef = String(updates.employeeId || updates.internId || updates.candidateId || updates.assignedPersonId || "");
+    if (newRef && existingRef && newRef !== existingRef && !existingRef.includes(newRef)) {
+      throw new Error("CANNOT_REASSIGN_DOCUMENT: Person assignment for an official registered document is permanent and cannot be modified.");
+    }
   }
 
   // Update permitted fields

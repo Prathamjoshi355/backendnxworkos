@@ -12,6 +12,11 @@ export interface ILeave extends mongoose.Document {
   startDate: Date;
   endDate: Date;
   totalDays: number;
+  isHalfDay?: boolean;
+  halfDayPeriod?: "FIRST_HALF" | "SECOND_HALF" | null;
+  isPaid?: boolean;
+  documentUrl?: string | null;
+  documentFileName?: string | null;
   reason: string;
   status: LeaveStatus;
   appliedAt: Date;
@@ -26,13 +31,18 @@ const LeaveSchema = new Schema<ILeave>(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
     organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
-    departmentId: { type: Schema.Types.ObjectId, ref: "Department", default: null, index: true },
-    teamId: { type: Schema.Types.ObjectId, ref: "Team", default: null, index: true },
-    leaveTypeId: { type: Schema.Types.ObjectId, ref: "LeaveType", default: null },
+    departmentId: { type: Schema.Types.Mixed, default: null, index: true },
+    teamId: { type: Schema.Types.Mixed, default: null, index: true },
+    leaveTypeId: { type: Schema.Types.Mixed, default: null },
     leaveTypeName: { type: String, required: true },
     startDate: { type: Date, required: true },
     endDate: { type: Date, required: true },
     totalDays: { type: Number, required: true, default: 1 },
+    isHalfDay: { type: Boolean, default: false },
+    halfDayPeriod: { type: String, enum: ["FIRST_HALF", "SECOND_HALF", null], default: null },
+    isPaid: { type: Boolean, default: true },
+    documentUrl: { type: String, default: null },
+    documentFileName: { type: String, default: null },
     reason: { type: String, required: true },
     status: { type: String, enum: ["PENDING", "APPROVED", "REJECTED", "CANCELLED"], default: "PENDING", index: true },
     appliedAt: { type: Date, default: Date.now },

@@ -10,8 +10,8 @@ export async function POST(request: Request) {
   try {
     await connectToDatabase();
     const user = await getUserFromRequest(request);
-    if (!user || !requireRole(user, ["SUPER_ADMIN", "ADMIN"])) {
-      return error("FORBIDDEN", "Only Administrators can perform operational attendance corrections.", 403);
+    if (!user || !requireRole(user, ["SUPER_ADMIN", "ADMIN", "HR"])) {
+      return error("FORBIDDEN", "Only Administrators and HR can perform operational attendance corrections.", 403);
     }
 
     const body = await request.json().catch(() => ({}));

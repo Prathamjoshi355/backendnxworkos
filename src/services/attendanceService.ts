@@ -1,6 +1,6 @@
 import Division from "../models/Division";
 import mongoose from "mongoose";
-import Attendance from "../models/Attendance";
+import Attendance, { AttendanceStatus } from "../models/Attendance";
 import WorkSession from "../models/WorkSession";
 import AttendanceBreak from "../models/Break";
 import User from "../models/User";
@@ -8,6 +8,8 @@ import Organization from "../models/Organization";
 import DailyReport from "../models/DailyReport";
 import TaskTimeSession from "../models/TaskTimeSession";
 import Task from "../models/Task";
+import { isDateHoliday } from "./holidayService";
+import { recordAuditLog } from "./auditLogService";
 import { buildAttendanceSocketPayload, emitAttendanceEvent } from "../realtime/attendance";
 
 const MS_PER_MINUTE = 60 * 1000;
@@ -455,36 +457,75 @@ export async function getLiveAttendance(options: {
 
 export async function correctAttendance(
   attendanceId: string,
-  payload: { attendanceStatus?: "PRESENT" | "LATE" | "ABSENT" | "ON_LEAVE"; totalWorkDuration?: number; reason: string },
+  payload: {
+    attendanceStatus?:
+      | "PRESENT"
+      | "ABSENT"
+      | "LATE"
+      | "HALF_DAY"
+      | "ON_LEAVE"
+      | "UNPAID_LEAVE"
+      | "WEEKLY_OFF"
+      | "HOLIDAY"
+      | "NOT_MARKED";
+    totalWorkDuration?: number;
+    reason: string;
+  },
   actorUser: any
 ) {
   const attendance = await Attendance.findById(attendanceId).lean();
   if (!attendance) throw new Error("ATTENDANCE_NOT_FOUND");
 
+  const targetStatus = payload.attendanceStatus || attendance.attendanceStatus;
+  const isCorrectingToPresent = targetStatus === "PRESENT" || targetStatus === "LATE";
+  const defaultWorkMinutes = payload.totalWorkDuration !== undefined ? payload.totalWorkDuration : (isCorrectingToPresent ? 480 : attendance.totalWorkDuration);
+
   const correctionEntry = {
     correctedBy: actorUser._id || actorUser.id,
     previousStatus: attendance.attendanceStatus,
-    newStatus: payload.attendanceStatus || attendance.attendanceStatus,
+    newStatus: targetStatus,
     previousTotalWorkDuration: attendance.totalWorkDuration,
-    newTotalWorkDuration: payload.totalWorkDuration !== undefined ? payload.totalWorkDuration : attendance.totalWorkDuration,
+    newTotalWorkDuration: defaultWorkMinutes,
     reason: payload.reason || "Administrative attendance correction",
     correctedAt: new Date(),
   };
 
   const updateDoc: Record<string, any> = {
     $push: { corrections: correctionEntry },
+    attendanceStatus: targetStatus,
+    totalWorkDuration: defaultWorkMinutes,
+    workingDuration: defaultWorkMinutes,
   };
 
-  if (payload.attendanceStatus) {
-    updateDoc.attendanceStatus = payload.attendanceStatus;
-  }
-  if (payload.totalWorkDuration !== undefined) {
-    updateDoc.totalWorkDuration = Number(payload.totalWorkDuration);
+  if (isCorrectingToPresent && !attendance.checkInTime) {
+    const checkIn = new Date(attendance.date);
+    checkIn.setHours(9, 30, 0, 0);
+    updateDoc.checkInTime = checkIn;
+    const checkOut = new Date(checkIn.getTime() + defaultWorkMinutes * 60 * 1000);
+    updateDoc.checkOutTime = checkOut;
   }
 
-  const updated = await Attendance.findByIdAndUpdate(attendanceId, updateDoc, { new: true })
+  const updated: any = await Attendance.findByIdAndUpdate(attendanceId, updateDoc, { new: true })
     .populate("userId", "fullName email employeeId designation role")
     .lean();
+
+  // Audit trail record
+  await recordAuditLog({
+    organizationId: String(updated.organizationId || actorUser.organizationId || ""),
+    actorId: String(actorUser._id || actorUser.id),
+    actorRole: actorUser.role || "SUPER_ADMIN",
+    action: "ATTENDANCE_CORRECTED",
+    entityType: "ATTENDANCE",
+    entityId: attendanceId,
+    summary: `Attendance corrected from ${attendance.attendanceStatus} to ${targetStatus} for user ${updated.userId?.employeeId || updated.userId}`,
+    metadata: {
+      attendanceId,
+      userId: updated.userId?._id || updated.userId,
+      previousStatus: attendance.attendanceStatus,
+      newStatus: targetStatus,
+      reason: payload.reason,
+    },
+  }).catch(() => {});
 
   return updated;
 }
@@ -492,30 +533,47 @@ export async function correctAttendance(
 export { formatMinutes };
 
 /**
- * Finalizes un-checked-in employees as ABSENT or ON_LEAVE at the end of the workday cutoff.
+ * Finalizes un-checked-in employees as ABSENT, ON_LEAVE, UNPAID_LEAVE, WEEKLY_OFF, or HOLIDAY
+ * at the end of the workday cutoff.
  */
 export async function finalizeDailyAbsentees(options: {
   organizationId?: string | null;
   targetDate?: Date;
-} = {}) {
-  const targetDate = options.targetDate || new Date();
+} | Date = {}) {
+  let targetDate: Date;
+  let organizationId: string | null | undefined = undefined;
+
+  if (options instanceof Date) {
+    targetDate = options;
+  } else {
+    targetDate = options.targetDate || new Date();
+    organizationId = options.organizationId;
+  }
+
   const dayStart = getTodayDateStart(targetDate);
   const dayEnd = getTodayDateEnd(targetDate);
+  const dow = targetDate.getDay(); // 0 = Sun, 6 = Sat
 
   const userQuery: any = {
     status: "ACTIVE",
     employmentStatus: { $in: ["ACTIVE", "CONFIRMED", "PROBATION"] },
   };
-  if (options.organizationId) {
-    userQuery.organizationId = options.organizationId;
+  if (organizationId) {
+    userQuery.organizationId = organizationId;
   }
 
-  const activeUsers = await User.find(userQuery).select("_id organizationId departmentId teamId divisionId").lean();
+  const activeUsers = await User.find(userQuery)
+    .select("_id organizationId departmentId teamId divisionId role employmentType employmentClassification")
+    .lean();
 
   const results = {
     evaluated: activeUsers.length,
+    evaluatedUsers: activeUsers.length,
     finalizedAbsent: 0,
     markedOnLeave: 0,
+    markedUnpaidLeave: 0,
+    markedWeeklyOff: 0,
+    markedHoliday: 0,
     alreadyPresent: 0,
   };
 
@@ -523,25 +581,62 @@ export async function finalizeDailyAbsentees(options: {
 
   for (const user of activeUsers) {
     const userId = String(user._id);
+    const isIntern =
+      user.employmentType === "INTERN" ||
+      user.role === "INTERN" ||
+      user.employmentClassification === "FULL_TIME_INTERN" ||
+      user.employmentClassification === "PART_TIME_INTERN";
 
     let attendance = await Attendance.findOne({
       userId,
       date: { $gte: dayStart, $lte: dayEnd },
     });
 
-    if (attendance && (attendance.attendanceStatus === "PRESENT" || attendance.attendanceStatus === "LATE")) {
+    if (
+      attendance &&
+      (attendance.attendanceStatus === "PRESENT" ||
+        attendance.attendanceStatus === "LATE" ||
+        attendance.attendanceStatus === "HALF_DAY")
+    ) {
       results.alreadyPresent++;
       continue;
     }
 
-    const approvedLeave = await Leave.findOne({
-      userId,
-      status: "APPROVED",
-      startDate: { $lte: dayEnd },
-      endDate: { $gte: dayStart },
-    }).lean();
+    // 1. Check if declared government holiday in Holiday Calendar
+    const holiday = user.organizationId ? await isDateHoliday(user.organizationId, targetDate) : null;
 
-    const finalStatus = approvedLeave ? "ON_LEAVE" : "ABSENT";
+    let finalStatus: AttendanceStatus = "ABSENT";
+
+    if (holiday) {
+      finalStatus = "HOLIDAY";
+    } else if (isIntern && dow === 6) {
+      // 2. Saturday is paid weekly holiday for interns
+      finalStatus = "WEEKLY_OFF";
+    } else if (!isIntern && dow === 0) {
+      // 3. Sunday is weekly off for employees
+      finalStatus = "WEEKLY_OFF";
+    } else {
+      // 4. Check if approved leave exists
+      const approvedLeave = await Leave.findOne({
+        userId,
+        status: "APPROVED",
+        startDate: { $lte: dayEnd },
+        endDate: { $gte: dayStart },
+      }).lean();
+
+      if (approvedLeave) {
+        if (approvedLeave.isHalfDay) {
+          finalStatus = "HALF_DAY";
+        } else if (approvedLeave.isPaid === false) {
+          finalStatus = "UNPAID_LEAVE";
+        } else {
+          finalStatus = "ON_LEAVE";
+        }
+      } else {
+        // 5. Eligible employee/intern with no valid check-in
+        finalStatus = "ABSENT";
+      }
+    }
 
     if (!attendance) {
       await Attendance.create({
@@ -567,6 +662,12 @@ export async function finalizeDailyAbsentees(options: {
 
     if (finalStatus === "ON_LEAVE") {
       results.markedOnLeave++;
+    } else if (finalStatus === "UNPAID_LEAVE") {
+      results.markedUnpaidLeave++;
+    } else if (finalStatus === "WEEKLY_OFF") {
+      results.markedWeeklyOff++;
+    } else if (finalStatus === "HOLIDAY") {
+      results.markedHoliday++;
     } else {
       results.finalizedAbsent++;
     }

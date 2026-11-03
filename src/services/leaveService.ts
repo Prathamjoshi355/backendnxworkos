@@ -2,6 +2,8 @@ import mongoose from "mongoose";
 import Leave from "../models/Leave";
 import LeaveType from "../models/LeaveType";
 import User from "../models/User";
+import Attendance, { AttendanceStatus } from "../models/Attendance";
+import { isDateHoliday } from "./holidayService";
 import { createNotification } from "./notificationService";
 import { recordAuditLog } from "./auditLogService";
 import { getManagementScope } from "../utils/scopeHelper";
@@ -22,11 +24,11 @@ export async function createLeaveType(organizationId: string, payload: any) {
 export async function listLeaveTypes(organizationId: string) {
   const items = await LeaveType.find({ organizationId, status: "ACTIVE" }).lean();
   if (items.length === 0) {
-    // Seed default leave types if none exist
+    // Seed default employee leave structure: 51 days annual entitlement (PL 30, CL 14, ML 7) + Unpaid Leave
     const defaults = [
-      { name: "Casual Leave", code: "CL", allocatedDays: 12, isPaid: true },
-      { name: "Sick Leave", code: "SL", allocatedDays: 10, isPaid: true },
-      { name: "Earned Leave", code: "EL", allocatedDays: 15, isPaid: true },
+      { name: "Privilege Leave", code: "PL", allocatedDays: 30, isPaid: true },
+      { name: "Casual Leave", code: "CL", allocatedDays: 14, isPaid: true },
+      { name: "Medical Leave", code: "ML", allocatedDays: 7, isPaid: true },
       { name: "Unpaid Leave", code: "UL", allocatedDays: 30, isPaid: false, allowNegativeBalance: true },
     ];
     const created = await LeaveType.insertMany(defaults.map((d) => ({ ...d, organizationId })));
@@ -46,12 +48,56 @@ export async function applyLeave(user: any, payload: any) {
     throw new Error("END_DATE_BEFORE_START_DATE");
   }
 
-  // Calculate inclusive calendar days
-  const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
-  const totalDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
-
   const userId = user._id || user.id;
   const organizationId = user.organizationId;
+  const userDoc = await User.findById(userId).lean();
+
+  const isIntern =
+    userDoc?.employmentType === "INTERN" ||
+    userDoc?.role === "INTERN" ||
+    userDoc?.employmentClassification === "FULL_TIME_INTERN" ||
+    userDoc?.employmentClassification === "PART_TIME_INTERN";
+
+  const isHalfDay = payload.isHalfDay === true;
+  const halfDayPeriod = isHalfDay ? (payload.halfDayPeriod || "FIRST_HALF") : null;
+
+  let totalDays = 1;
+
+  if (isHalfDay) {
+    totalDays = 0.5;
+  } else {
+    // Iterate from startDate to endDate and exclude weekly offs & declared government holidays
+    let workingDaysCount = 0;
+    const cur = new Date(startDate);
+    cur.setHours(0, 0, 0, 0);
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+
+    while (cur <= end) {
+      const dow = cur.getDay(); // 0 = Sun, 6 = Sat
+      const isHoliday = await isDateHoliday(organizationId, cur);
+
+      if (!isHoliday) {
+        if (isIntern) {
+          // Saturday is paid weekly holiday for intern
+          if (dow !== 6) {
+            workingDaysCount++;
+          }
+        } else {
+          // Sunday is employee's weekly off
+          if (dow !== 0) {
+            workingDaysCount++;
+          }
+        }
+      }
+      cur.setDate(cur.getDate() + 1);
+    }
+
+    if (workingDaysCount <= 0) {
+      throw new Error("NO_WORKING_DAYS_IN_RANGE: Selected dates fall entirely on weekly offs or declared government holidays.");
+    }
+    totalDays = workingDaysCount;
+  }
 
   // Prevent overlapping active leaves
   const overlap = await Leave.findOne({
@@ -65,21 +111,31 @@ export async function applyLeave(user: any, payload: any) {
     throw new Error("LEAVE_OVERLAP");
   }
 
-  // Resolve Leave Type details if leaveTypeId provided
+  // Resolve Leave Type details
   let resolvedLeaveTypeId = payload.leaveTypeId || null;
-  let resolvedLeaveTypeName = payload.leaveTypeName || "General Leave";
+  let resolvedLeaveTypeName = payload.leaveTypeName || (isIntern ? "Intern Monthly Leave" : "Casual Leave");
+  let isPaid = true;
 
   if (resolvedLeaveTypeId && mongoose.isValidObjectId(resolvedLeaveTypeId)) {
     const leaveTypeDoc = await LeaveType.findOne({ _id: resolvedLeaveTypeId, organizationId }).lean();
     if (leaveTypeDoc) {
       resolvedLeaveTypeName = leaveTypeDoc.name;
-      if (!leaveTypeDoc.allowNegativeBalance) {
-        const balanceList = await getLeaveBalance(String(userId), String(organizationId));
-        const currentBal = balanceList.find((b) => String(b.leaveTypeId) === String(leaveTypeDoc._id));
-        if (currentBal && currentBal.remaining < totalDays) {
-          throw new Error("INSUFFICIENT_LEAVE_BALANCE");
-        }
-      }
+      isPaid = leaveTypeDoc.isPaid;
+    }
+  }
+
+  // Balance verification
+  const balanceList = await getLeaveBalance(String(userId), String(organizationId));
+  const currentBal = balanceList.find(
+    (b) =>
+      String(b.leaveTypeId) === String(resolvedLeaveTypeId) ||
+      b.leaveTypeName.toLowerCase() === resolvedLeaveTypeName.toLowerCase()
+  );
+
+  if (currentBal) {
+    isPaid = currentBal.isPaid;
+    if (!currentBal.allowNegativeBalance && currentBal.remaining < totalDays) {
+      throw new Error("INSUFFICIENT_LEAVE_BALANCE: Requested leave exceeds available balance.");
     }
   }
 
@@ -93,6 +149,11 @@ export async function applyLeave(user: any, payload: any) {
     startDate,
     endDate,
     totalDays,
+    isHalfDay,
+    halfDayPeriod,
+    isPaid,
+    documentUrl: payload.documentUrl || null,
+    documentFileName: payload.documentFileName || null,
     reason: payload.reason,
     status: "PENDING",
   });
@@ -180,7 +241,7 @@ export async function reviewLeave(leaveId: string, status: "APPROVED" | "REJECTE
     if (!scope.scopedUserIds.includes(leaveUserId)) {
       throw new Error("LEAVE_USER_OUTSIDE_SCOPE");
     }
-  } else if (reviewer.role !== "SUPER_ADMIN" && reviewer.role !== "ADMIN") {
+  } else if (reviewer.role !== "SUPER_ADMIN" && reviewer.role !== "ADMIN" && reviewer.role !== "HR") {
     throw new Error("FORBIDDEN");
   }
 
@@ -192,18 +253,43 @@ export async function reviewLeave(leaveId: string, status: "APPROVED" | "REJECTE
   leave.reviewerComment = comment || null;
   await leave.save();
 
-  // Attendance Integration: Mark calendar dates as ON_LEAVE upon approval
+  // Attendance Integration: Mark calendar dates upon approval (ON_LEAVE, UNPAID_LEAVE, or HALF_DAY)
   if (status === "APPROVED") {
     try {
       const Attendance = (await import("../models/Attendance")).default;
+      const targetAttStatus = leave.isHalfDay
+        ? "HALF_DAY"
+        : leave.isPaid === false
+        ? "UNPAID_LEAVE"
+        : "ON_LEAVE";
+
       const currentDay = new Date(leave.startDate);
       const endDay = new Date(leave.endDate);
+
+      const targetUser = await User.findById(leave.userId).lean();
+      const isTargetIntern =
+        targetUser?.employmentType === "INTERN" ||
+        targetUser?.role === "INTERN" ||
+        targetUser?.employmentClassification === "FULL_TIME_INTERN" ||
+        targetUser?.employmentClassification === "PART_TIME_INTERN";
 
       while (currentDay <= endDay) {
         const dayStart = new Date(currentDay);
         dayStart.setHours(0, 0, 0, 0);
         const dayEnd = new Date(currentDay);
         dayEnd.setHours(23, 59, 59, 999);
+
+        const isHol = leave.organizationId ? await isDateHoliday(leave.organizationId, currentDay) : null;
+        const dayOfWeek = currentDay.getDay(); // 0 = Sun, 6 = Sat
+        const isEmpSunday = !isTargetIntern && dayOfWeek === 0;
+        const isIntSat = isTargetIntern && dayOfWeek === 6;
+
+        let dayTargetStatus: AttendanceStatus = targetAttStatus as AttendanceStatus;
+        if (isHol) {
+          dayTargetStatus = "HOLIDAY";
+        } else if (isEmpSunday || isIntSat) {
+          dayTargetStatus = "WEEKLY_OFF";
+        }
 
         const existingAtt = await Attendance.findOne({
           userId: leave.userId,
@@ -217,13 +303,13 @@ export async function reviewLeave(leaveId: string, status: "APPROVED" | "REJECTE
             departmentId: leave.departmentId || null,
             teamId: leave.teamId || null,
             date: dayStart,
-            attendanceStatus: "ON_LEAVE",
+            attendanceStatus: dayTargetStatus,
             currentStatus: "OFFLINE",
             totalWorkDuration: 0,
             totalBreakDuration: 0,
           });
         } else if (existingAtt.currentStatus === "OFFLINE" && existingAtt.totalWorkDuration === 0) {
-          existingAtt.attendanceStatus = "ON_LEAVE";
+          existingAtt.attendanceStatus = dayTargetStatus;
           await existingAtt.save();
         }
 
@@ -364,11 +450,89 @@ export async function cancelLeave(leaveId: string, user: any) {
   return leave.toObject();
 }
 
-export async function getLeaveBalance(userId: string, organizationId: string) {
-  const types = await listLeaveTypes(organizationId);
+export async function getLeaveBalance(userIdOrUser: any, orgIdParam?: string) {
+  let userId: string;
+  let organizationId = orgIdParam;
+  let user: any = null;
+
+  if (typeof userIdOrUser === "object" && userIdOrUser !== null) {
+    user = userIdOrUser;
+    userId = String(userIdOrUser._id || userIdOrUser.id);
+    if (!organizationId) {
+      organizationId = String(userIdOrUser.organizationId || "");
+    }
+  } else {
+    userId = String(userIdOrUser);
+    user = await User.findById(userId).lean();
+    if (!organizationId && user) {
+      organizationId = String(user.organizationId || "");
+    }
+  }
+  const isIntern =
+    user?.employmentType === "INTERN" ||
+    user?.role === "INTERN" ||
+    user?.employmentClassification === "FULL_TIME_INTERN" ||
+    user?.employmentClassification === "PART_TIME_INTERN";
+
   const approvedLeaves = await Leave.find({ userId, status: "APPROVED" }).lean();
   const pendingLeaves = await Leave.find({ userId, status: "PENDING" }).lean();
 
+  if (isIntern) {
+    // Intern Leave Policy: Exactly 1 leave per month of internship
+    const start = user?.internshipStartDate
+      ? new Date(user.internshipStartDate)
+      : user?.joiningDate
+      ? new Date(user.joiningDate)
+      : (user as any)?.createdAt
+      ? new Date((user as any).createdAt)
+      : new Date();
+
+    const end = user?.internshipEndDate
+      ? new Date(user.internshipEndDate)
+      : new Date(start.getTime() + 90 * 24 * 60 * 60 * 1000); // 3-month default
+
+    const totalDays = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)));
+    const months = Math.max(1, Math.round(totalDays / 30));
+    const internAllocated = months; // 1 leave per month (e.g. 3 months = 3, 6 months = 6)
+
+    const usedPaid = approvedLeaves
+      .filter((l) => l.isPaid !== false)
+      .reduce((sum, l) => sum + (l.totalDays || 0), 0);
+    const pendingPaid = pendingLeaves
+      .filter((l) => l.isPaid !== false)
+      .reduce((sum, l) => sum + (l.totalDays || 0), 0);
+    const remainingPaid = Math.max(0, internAllocated - usedPaid);
+
+    const usedUnpaid = approvedLeaves
+      .filter((l) => l.isPaid === false)
+      .reduce((sum, l) => sum + (l.totalDays || 0), 0);
+
+    return [
+      {
+        leaveTypeId: "INTERN_MONTHLY_LEAVE",
+        leaveTypeName: "Intern Monthly Leave",
+        allocated: internAllocated,
+        used: usedPaid,
+        pending: pendingPaid,
+        remaining: remainingPaid,
+        isPaid: true,
+        allowNegativeBalance: false,
+      },
+      {
+        leaveTypeId: "INTERN_UNPAID_LEAVE",
+        leaveTypeName: "Intern Unpaid Leave",
+        allocated: 30,
+        used: usedUnpaid,
+        pending: 0,
+        remaining: Math.max(0, 30 - usedUnpaid),
+        isPaid: false,
+        allowNegativeBalance: true,
+      },
+    ];
+  }
+
+  // Employee: Confirmed 51-day Annual Leave entitlement
+  const types = await listLeaveTypes(organizationId || "");
   const balanceList = types.map((type) => {
     const usedDays = approvedLeaves
       .filter((l) => String(l.leaveTypeName).toLowerCase() === String(type.name).toLowerCase() || String(l.leaveTypeId) === String(type._id))

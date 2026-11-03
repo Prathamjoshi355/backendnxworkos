@@ -123,8 +123,13 @@ export async function GET(request: Request) {
   if (authUser.role === "SUPER_ADMIN") {
     const orgParam = url.searchParams.get("organizationId");
     if (orgParam) filters.organizationId = orgParam;
-  } else if (authUser.role === "ADMIN") {
+  } else if (["ADMIN", "HR", "HR_HEAD"].includes(authUser.role)) {
     filters.organizationId = authUser.organizationId;
+  } else if (authUser.role === "DIVISION_ADMIN") {
+    filters.organizationId = authUser.organizationId;
+    if (authUser.divisionId) {
+      filters.divisionId = authUser.divisionId;
+    }
   } else {
     // MANAGER, TEAM_LEADER, EMPLOYEE
     const scope = await getManagementScope(authUser);

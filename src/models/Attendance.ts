@@ -1,6 +1,15 @@
 import mongoose, { Schema } from "mongoose";
 
-export type AttendanceStatus = "PRESENT" | "LATE" | "ABSENT" | "ON_LEAVE" | "NOT_MARKED";
+export type AttendanceStatus =
+  | "PRESENT"
+  | "ABSENT"
+  | "LATE"
+  | "HALF_DAY"
+  | "ON_LEAVE"
+  | "UNPAID_LEAVE"
+  | "WEEKLY_OFF"
+  | "HOLIDAY"
+  | "NOT_MARKED";
 export type AttendanceCurrentStatus = "OFFLINE" | "ONLINE" | "ON_BREAK" | "LOGGED_OUT";
 
 export interface IAttendanceCorrection {
@@ -37,15 +46,20 @@ const AttendanceSchema = new Schema<IAttendance>(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
     organizationId: { type: Schema.Types.ObjectId, ref: "Organization", default: null, index: true },
-    departmentId: { type: Schema.Types.ObjectId, ref: "Department", default: null, index: true },
-    teamId: { type: Schema.Types.ObjectId, ref: "Team", default: null, index: true },
+    departmentId: { type: Schema.Types.Mixed, default: null, index: true },
+    teamId: { type: Schema.Types.Mixed, default: null, index: true },
     date: { type: Date, required: true, index: true },
     firstLoginAt: { type: Date, default: null },
     lastLogoutAt: { type: Date, default: null },
     checkInTime: { type: Date, default: null, index: true },
     checkOutTime: { type: Date, default: null },
     workingDuration: { type: Number, default: 0 },
-    attendanceStatus: { type: String, enum: ["PRESENT", "LATE", "ABSENT", "ON_LEAVE", "NOT_MARKED"], default: "NOT_MARKED" },
+    attendanceStatus: {
+      type: String,
+      enum: ["PRESENT", "ABSENT", "LATE", "HALF_DAY", "ON_LEAVE", "UNPAID_LEAVE", "WEEKLY_OFF", "HOLIDAY", "NOT_MARKED"],
+      default: "NOT_MARKED",
+      index: true,
+    },
     totalWorkDuration: { type: Number, default: 0 },
     totalBreakDuration: { type: Number, default: 0 },
     currentStatus: { type: String, enum: ["OFFLINE", "ONLINE", "ON_BREAK", "LOGGED_OUT"], default: "OFFLINE" },

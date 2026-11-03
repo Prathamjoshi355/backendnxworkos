@@ -79,6 +79,11 @@ export interface INXDocument extends Document {
   externalCompanyId?: string | null;
   employeeId?: Types.ObjectId | null;
   internId?: Types.ObjectId | null;
+  candidateId?: Types.ObjectId | null;
+  assignedPersonType?: "EMPLOYEE" | "INTERN" | "CANDIDATE" | null;
+  assignedPersonId?: string | null;
+  assignedPersonName?: string | null;
+  assignedPersonEmail?: string | null;
   vendorId?: string | null;
   projectId?: Types.ObjectId | null;
 
@@ -225,6 +230,11 @@ const NXDocumentSchema = new Schema<INXDocument>(
     externalCompanyId: { type: String, default: null },
     employeeId: { type: Schema.Types.ObjectId, ref: "User", default: null, index: true },
     internId: { type: Schema.Types.ObjectId, ref: "User", default: null, index: true },
+    candidateId: { type: Schema.Types.ObjectId, ref: "Candidate", default: null, index: true },
+    assignedPersonType: { type: String, enum: ["EMPLOYEE", "INTERN", "CANDIDATE", null], default: null, index: true },
+    assignedPersonId: { type: String, default: null, index: true },
+    assignedPersonName: { type: String, default: null },
+    assignedPersonEmail: { type: String, default: null },
     vendorId: { type: String, default: null, index: true },
     projectId: { type: Schema.Types.ObjectId, ref: "Project", default: null, index: true },
 

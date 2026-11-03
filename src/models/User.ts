@@ -30,7 +30,8 @@ export interface IUser extends mongoose.Document {
   passwordHash: string;
   role: typeof Role[keyof typeof Role];
   employmentType: typeof EmploymentType[keyof typeof EmploymentType];
-  employmentStatus?: "INVITED" | "ACTIVE" | "PROBATION" | "CONFIRMED" | "ON_LEAVE" | "NOTICE_PERIOD" | "SUSPENDED" | "INACTIVE" | "TERMINATED" | "RESIGNED" | "EXITED" | string;
+  employmentClassification?: "FULL_TIME_EMPLOYEE" | "PART_TIME_EMPLOYEE" | "FULL_TIME_INTERN" | "PART_TIME_INTERN" | string;
+  employmentStatus?: "INVITED" | "ACTIVE" | "PROBATION" | "CONFIRMED" | "ON_LEAVE" | "NOTICE_PERIOD" | "SUSPENDED" | "INACTIVE" | "TERMINATED" | "RESIGNED" | "EXITED" | "COMPLETED" | string;
   organizationId?: string | null;
   divisionId?: mongoose.Types.ObjectId | string | null;
   primaryDivisionId?: mongoose.Types.ObjectId | string | null;
@@ -51,6 +52,12 @@ export interface IUser extends mongoose.Document {
   joiningDate?: Date | null;
   probationEndDate?: Date | null;
   confirmationDate?: Date | null;
+  internshipStartDate?: Date | null;
+  internshipEndDate?: Date | null;
+  evaluationPeriodMonths?: number | null;
+  provisionStipend?: number | null;
+  confirmedStipend?: number | null;
+  confirmedStipendEffectiveDate?: Date | null;
   onboardingStatus?: "PENDING" | "IN_PROGRESS" | "COMPLETED" | string;
   onboardingChecklist?: Array<{
     key: string;
@@ -125,9 +132,15 @@ const UserSchema = new Schema<IUser>(
     passwordHash: { type: String, required: true, select: false },
     role: { type: String, required: true, enum: Object.values(Role), default: Role.EMPLOYEE, index: true },
     employmentType: { type: String, required: true, enum: Object.values(EmploymentType), default: EmploymentType.EMPLOYEE, index: true },
+    employmentClassification: {
+      type: String,
+      enum: ["FULL_TIME_EMPLOYEE", "PART_TIME_EMPLOYEE", "FULL_TIME_INTERN", "PART_TIME_INTERN"],
+      default: "FULL_TIME_EMPLOYEE",
+      index: true,
+    },
     employmentStatus: {
       type: String,
-      enum: ["INVITED", "ACTIVE", "PROBATION", "CONFIRMED", "ON_LEAVE", "NOTICE_PERIOD", "SUSPENDED", "INACTIVE", "TERMINATED", "RESIGNED", "EXITED"],
+      enum: ["INVITED", "ACTIVE", "PROBATION", "CONFIRMED", "ON_LEAVE", "NOTICE_PERIOD", "SUSPENDED", "INACTIVE", "TERMINATED", "RESIGNED", "EXITED", "COMPLETED"],
       default: "ACTIVE",
       index: true,
     },
@@ -153,6 +166,12 @@ const UserSchema = new Schema<IUser>(
     joiningDate: { type: Date, default: null },
     probationEndDate: { type: Date, default: null },
     confirmationDate: { type: Date, default: null },
+    internshipStartDate: { type: Date, default: null },
+    internshipEndDate: { type: Date, default: null },
+    evaluationPeriodMonths: { type: Number, default: null },
+    provisionStipend: { type: Number, default: null },
+    confirmedStipend: { type: Number, default: null },
+    confirmedStipendEffectiveDate: { type: Date, default: null },
     onboardingStatus: {
       type: String,
       enum: ["PENDING", "IN_PROGRESS", "COMPLETED"],
@@ -190,7 +209,7 @@ const UserSchema = new Schema<IUser>(
     workMode: { type: String, enum: ["REMOTE", "HYBRID", "OFFICE"], default: "OFFICE" },
     status: {
       type: String,
-      enum: ["INVITED", "ACTIVE", "PROBATION", "CONFIRMED", "ON_LEAVE", "NOTICE_PERIOD", "SUSPENDED", "INACTIVE", "TERMINATED", "RESIGNED", "EXITED"],
+      enum: ["INVITED", "ACTIVE", "PROBATION", "CONFIRMED", "ON_LEAVE", "NOTICE_PERIOD", "SUSPENDED", "INACTIVE", "TERMINATED", "RESIGNED", "EXITED", "COMPLETED"],
       default: "ACTIVE",
       index: true,
     },
@@ -211,6 +230,7 @@ UserSchema.index({ organizationId: 1, role: 1 });
 UserSchema.index({ organizationId: 1, teamId: 1 });
 UserSchema.index({ organizationId: 1, departmentId: 1 });
 UserSchema.index({ organizationId: 1, employmentStatus: 1 });
+UserSchema.index({ organizationId: 1, employmentClassification: 1 });
 UserSchema.index({ organizationId: 1, divisionId: 1 });
 UserSchema.index({ organizationId: 1, "teamMemberships.teamId": 1 });
 

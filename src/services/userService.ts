@@ -85,6 +85,7 @@ export async function createUser(payload: any) {
     passwordMetadata,
     role: payload.role || "EMPLOYEE",
     employmentType: payload.employmentType || "EMPLOYEE",
+    employmentClassification: payload.employmentClassification || (payload.employmentType === "INTERN" || payload.role === "INTERN" ? "FULL_TIME_INTERN" : "FULL_TIME_EMPLOYEE"),
     employmentStatus: payload.employmentStatus || payload.status || "ACTIVE",
     status: payload.status || payload.employmentStatus || "ACTIVE",
     country: payload.country || "India",
@@ -122,6 +123,12 @@ export async function createUser(payload: any) {
   if (payload.departmentProfileId) userDoc.departmentProfileId = payload.departmentProfileId;
   if (payload.designationProfileId) userDoc.designationProfileId = payload.designationProfileId;
   if (payload.joiningDate) userDoc.joiningDate = new Date(payload.joiningDate);
+  if (payload.internshipStartDate) userDoc.internshipStartDate = new Date(payload.internshipStartDate);
+  if (payload.internshipEndDate) userDoc.internshipEndDate = new Date(payload.internshipEndDate);
+  if (payload.evaluationPeriodMonths) userDoc.evaluationPeriodMonths = Number(payload.evaluationPeriodMonths);
+  if (payload.provisionStipend) userDoc.provisionStipend = Number(payload.provisionStipend);
+  if (payload.confirmedStipend) userDoc.confirmedStipend = Number(payload.confirmedStipend);
+  if (payload.confirmedStipendEffectiveDate) userDoc.confirmedStipendEffectiveDate = new Date(payload.confirmedStipendEffectiveDate);
   if (payload.workLocation) userDoc.workLocation = payload.workLocation;
   if (payload.workMode) userDoc.workMode = payload.workMode;
   if (payload.profilePhoto) userDoc.profilePhoto = payload.profilePhoto;
